@@ -7,21 +7,14 @@
  ******************************************************************************
  */
 
-#include <xenia/apu/audio_driver.h>
+#include "xenia/apu/audio_driver.h"
 
-#include <xenia/emulator.h>
-#include <xenia/cpu/processor.h>
-#include <xenia/cpu/xenon_thread_state.h>
+namespace xe {
+namespace apu {
 
+AudioDriver::AudioDriver(Memory* memory) : memory_(memory) {}
 
-using namespace xe;
-using namespace xe::apu;
-using namespace xe::cpu;
+AudioDriver::~AudioDriver() = default;
 
-
-AudioDriver::AudioDriver(Emulator* emulator) :
-    emulator_(emulator), memory_(emulator->memory()) {
-}
-
-AudioDriver::~AudioDriver() {
-}
+}  // namespace apu
+}  // namespace xe

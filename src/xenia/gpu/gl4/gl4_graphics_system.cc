@@ -7,183 +7,78 @@
  ******************************************************************************
  */
 
-#include <xenia/gpu/gl4/gl4_graphics_system.h>
+#include "xenia/gpu/gl4/gl4_graphics_system.h"
 
-#include <poly/threading.h>
-#include <xenia/cpu/processor.h>
-#include <xenia/gpu/gl4/gl4_gpu-private.h>
-#include <xenia/gpu/gl4/gl4_profiler_display.h>
-#include <xenia/gpu/gpu-private.h>
+#include <algorithm>
+#include <cstring>
+
+#include "xenia/base/logging.h"
+#include "xenia/base/profiling.h"
+#include "xenia/cpu/processor.h"
+#include "xenia/gpu/gl4/gl4_command_processor.h"
+#include "xenia/gpu/gl4/gl4_gpu_flags.h"
+#include "xenia/gpu/gpu_flags.h"
+#include "xenia/ui/gl/gl_provider.h"
+#include "xenia/ui/window.h"
 
 namespace xe {
 namespace gpu {
 namespace gl4 {
 
-extern "C" GLEWContext* glewGetContext();
-
-GL4GraphicsSystem::GL4GraphicsSystem(Emulator* emulator)
-    : GraphicsSystem(emulator), timer_queue_(nullptr), vsync_timer_(nullptr) {}
+GL4GraphicsSystem::GL4GraphicsSystem() = default;
 
 GL4GraphicsSystem::~GL4GraphicsSystem() = default;
 
-X_STATUS GL4GraphicsSystem::Setup() {
-  auto result = GraphicsSystem::Setup();
+X_STATUS GL4GraphicsSystem::Setup(cpu::Processor* processor,
+                                  kernel::KernelState* kernel_state,
+                                  ui::Window* target_window) {
+  // Must create the provider so we can create contexts.
+  provider_ = xe::ui::gl::GLProvider::Create(target_window);
+
+  auto result = GraphicsSystem::Setup(processor, kernel_state, target_window);
   if (result) {
     return result;
   }
 
-  // Create rendering control.
-  // This must happen on the UI thread.
-  poly::threading::Fence control_ready_fence;
-  auto loop = emulator_->main_window()->loop();
-  std::unique_ptr<GLContext> processor_context;
-  loop->Post([&]() {
-    // Setup the GL control that actually does the drawing.
-    // We run here in the loop and only touch it (and its context) on this
-    // thread. That means some sync-fu when we want to swap.
-    control_ = std::make_unique<WGLControl>(loop);
-    emulator_->main_window()->AddChild(control_.get());
-
-    // Setup the GL context the command processor will do all its drawing in.
-    // It's shared with the control context so that we can resolve framebuffers
-    // from it.
-    processor_context = control_->context()->CreateShared();
-
-    {
-      GLContextLock context_lock(control_->context());
-      auto profiler_display =
-          std::make_unique<GL4ProfilerDisplay>(control_.get());
-      Profiler::set_display(std::move(profiler_display));
-    }
-
-    control_ready_fence.Signal();
-  });
-  control_ready_fence.Wait();
-
-  // Create command processor. This will spin up a thread to process all
-  // incoming ringbuffer packets.
-  command_processor_ = std::make_unique<CommandProcessor>(this);
-  if (!command_processor_->Initialize(std::move(processor_context))) {
-    PLOGE("Unable to initialize command processor");
-    return X_STATUS_UNSUCCESSFUL;
-  }
-  command_processor_->set_swap_handler(
-      [this](const SwapParameters& swap_params) { SwapHandler(swap_params); });
-
-  // Let the processor know we want register access callbacks.
-  emulator_->memory()->AddMappedRange(
-      0x7FC80000, 0xFFFF0000, 0x0000FFFF, this,
-      reinterpret_cast<cpu::MMIOReadCallback>(MMIOReadRegisterThunk),
-      reinterpret_cast<cpu::MMIOWriteCallback>(MMIOWriteRegisterThunk));
-
-  // 60hz vsync timer.
-  DWORD timer_period = 16;
-  if (!FLAGS_vsync) {
-    // DANGER a value too low here will lead to starvation!
-    timer_period = 4;
-  }
-  timer_queue_ = CreateTimerQueue();
-  CreateTimerQueueTimer(&vsync_timer_, timer_queue_,
-                        (WAITORTIMERCALLBACK)VsyncCallbackThunk, this, 16,
-                        timer_period, WT_EXECUTEINPERSISTENTTHREAD);
+  display_context_ =
+      reinterpret_cast<xe::ui::gl::GLContext*>(target_window->context());
 
   return X_STATUS_SUCCESS;
 }
 
-void GL4GraphicsSystem::Shutdown() {
-  DeleteTimerQueueTimer(timer_queue_, vsync_timer_, nullptr);
-  DeleteTimerQueue(timer_queue_);
+void GL4GraphicsSystem::Shutdown() { GraphicsSystem::Shutdown(); }
 
-  command_processor_->Shutdown();
-
-  // TODO(benvanik): remove mapped range.
-
-  command_processor_.reset();
-  control_.reset();
-
-  GraphicsSystem::Shutdown();
+std::unique_ptr<CommandProcessor> GL4GraphicsSystem::CreateCommandProcessor() {
+  return std::unique_ptr<CommandProcessor>(
+      new GL4CommandProcessor(this, kernel_state_));
 }
 
-void GL4GraphicsSystem::InitializeRingBuffer(uint32_t ptr,
-                                             uint32_t page_count) {
-  command_processor_->InitializeRingBuffer(ptr, page_count);
-}
-
-void GL4GraphicsSystem::EnableReadPointerWriteBack(uint32_t ptr,
-                                                   uint32_t block_size) {
-  command_processor_->EnableReadPointerWriteBack(ptr, block_size);
-}
-
-void GL4GraphicsSystem::MarkVblank() {
-  static bool thread_name_set = false;
-  if (!thread_name_set) {
-    thread_name_set = true;
-    Profiler::ThreadEnter("GL4 Vsync Timer");
+void GL4GraphicsSystem::Swap(xe::ui::UIEvent* e) {
+  if (!command_processor_) {
+    return;
   }
-  SCOPE_profile_cpu_f("gpu");
-
-  // Increment vblank counter (so the game sees us making progress).
-  command_processor_->increment_counter();
-
-  // TODO(benvanik): we shouldn't need to do the dispatch here, but there's
-  //     something wrong and the CP will block waiting for code that
-  //     needs to be run in the interrupt.
-  DispatchInterruptCallback(0, 2);
-}
-
-void GL4GraphicsSystem::SwapHandler(const SwapParameters& swap_params) {
-  SCOPE_profile_cpu_f("gpu");
-
-  // Swap requested. Synchronously post a request to the loop so that
-  // we do the swap in the right thread.
-  control_->SynchronousRepaint([&]() {
-    glBlitNamedFramebuffer(swap_params.framebuffer, 0, swap_params.x,
-                           swap_params.y, swap_params.x + swap_params.width,
-                           swap_params.y + swap_params.height, 0, 0,
-                           control_->width(), control_->height(),
-                           GL_COLOR_BUFFER_BIT, GL_LINEAR);
-  });
-}
-
-uint64_t GL4GraphicsSystem::ReadRegister(uint64_t addr) {
-  uint32_t r = addr & 0xFFFF;
-  if (FLAGS_trace_ring_buffer) {
-    XELOGGPU("ReadRegister(%.4X)", r);
+  // Check for pending swap.
+  auto& swap_state = command_processor_->swap_state();
+  {
+    std::lock_guard<std::mutex> lock(swap_state.mutex);
+    if (swap_state.pending) {
+      swap_state.pending = false;
+      std::swap(swap_state.front_buffer_texture,
+                swap_state.back_buffer_texture);
+    }
   }
 
-  switch (r) {
-    case 0x6530:  // ????
-      return 1;
-    case 0x6544:  // ? vblank pending?
-      return 1;
-    case 0x6584:  // ????
-      return 1;
+  if (!swap_state.front_buffer_texture) {
+    // Not yet ready.
+    return;
   }
 
-  assert_true(r >= 0 && r < RegisterFile::kRegisterCount);
-  return register_file_.values[r].u32;
-}
-
-void GL4GraphicsSystem::WriteRegister(uint64_t addr, uint64_t value) {
-  uint32_t r = addr & 0xFFFF;
-  if (FLAGS_trace_ring_buffer) {
-    XELOGGPU("WriteRegister(%.4X, %.8X)", r, value);
-  }
-
-  switch (r) {
-    case 0x0714:  // CP_RB_WPTR
-      command_processor_->UpdateWritePointer(static_cast<uint32_t>(value));
-      break;
-    case 0x6110:  // ? swap related?
-      XELOGW("Unimplemented GPU register %.4X write: %.8X", r, value);
-      return;
-    default:
-      XELOGW("Unknown GPU register %.4X write: %.8X", r, value);
-      break;
-  }
-
-  assert_true(r >= 0 && r < RegisterFile::kRegisterCount);
-  register_file_.values[r].u32 = static_cast<uint32_t>(value);
+  // Blit the frontbuffer.
+  display_context_->blitter()->BlitTexture2D(
+      static_cast<GLuint>(swap_state.front_buffer_texture),
+      Rect2D(0, 0, swap_state.width, swap_state.height),
+      Rect2D(0, 0, target_window_->width(), target_window_->height()),
+      GL_LINEAR, false);
 }
 
 }  // namespace gl4

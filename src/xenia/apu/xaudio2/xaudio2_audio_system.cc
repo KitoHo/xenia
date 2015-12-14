@@ -7,32 +7,34 @@
  ******************************************************************************
  */
 
-#include <xenia/apu/xaudio2/xaudio2_audio_system.h>
-#include <xenia/apu/xaudio2/xaudio2_audio_driver.h>
+#include "xenia/apu/xaudio2/xaudio2_audio_system.h"
 
-#include <xenia/apu/apu-private.h>
+#include <xaudio2.h>
 
-#include <xenia/emulator.h>
+#include "xenia/apu/apu_flags.h"
+#include "xenia/apu/xaudio2/xaudio2_audio_driver.h"
 
-using namespace xe;
-using namespace xe::apu;
-using namespace xe::apu::xaudio2;
+namespace xe {
+namespace apu {
+namespace xaudio2 {
 
-
-XAudio2AudioSystem::XAudio2AudioSystem(Emulator* emulator) :
-  AudioSystem(emulator) {
+std::unique_ptr<AudioSystem> XAudio2AudioSystem::Create(
+    cpu::Processor* processor) {
+  return std::make_unique<XAudio2AudioSystem>(processor);
 }
 
-XAudio2AudioSystem::~XAudio2AudioSystem() {
-}
+XAudio2AudioSystem::XAudio2AudioSystem(cpu::Processor* processor)
+    : AudioSystem(processor) {}
 
-void XAudio2AudioSystem::Initialize() {
-  AudioSystem::Initialize();
-}
+XAudio2AudioSystem::~XAudio2AudioSystem() {}
 
-X_STATUS XAudio2AudioSystem::CreateDriver(size_t index, HANDLE wait, AudioDriver** out_driver) {
+void XAudio2AudioSystem::Initialize() { AudioSystem::Initialize(); }
+
+X_STATUS XAudio2AudioSystem::CreateDriver(size_t index,
+                                          xe::threading::Semaphore* semaphore,
+                                          AudioDriver** out_driver) {
   assert_not_null(out_driver);
-  auto driver = new XAudio2AudioDriver(emulator_, wait);
+  auto driver = new XAudio2AudioDriver(memory_, semaphore);
   driver->Initialize();
   *out_driver = driver;
   return X_STATUS_SUCCESS;
@@ -45,3 +47,7 @@ void XAudio2AudioSystem::DestroyDriver(AudioDriver* driver) {
   assert_not_null(xdriver);
   delete xdriver;
 }
+
+}  // namespace xaudio2
+}  // namespace apu
+}  // namespace xe

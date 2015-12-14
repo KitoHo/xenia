@@ -11,28 +11,30 @@
 #define XENIA_APU_AUDIO_SYSTEM_H_
 
 #include <atomic>
-#include <mutex>
 #include <queue>
-#include <thread>
 
-#include <xenia/common.h>
-#include <xenia/emulator.h>
-#include <xenia/xbox.h>
+#include "xenia/base/mutex.h"
+#include "xenia/base/threading.h"
+#include "xenia/cpu/processor.h"
+#include "xenia/kernel/xthread.h"
+#include "xenia/memory.h"
+#include "xenia/xbox.h"
 
 namespace xe {
 namespace apu {
 
 class AudioDriver;
+class XmaDecoder;
 
 class AudioSystem {
  public:
   virtual ~AudioSystem();
 
-  Emulator* emulator() const { return emulator_; }
   Memory* memory() const { return memory_; }
   cpu::Processor* processor() const { return processor_; }
+  XmaDecoder* xma_decoder() const { return xma_decoder_.get(); }
 
-  virtual X_STATUS Setup();
+  virtual X_STATUS Setup(kernel::KernelState* kernel_state);
   virtual void Shutdown();
 
   X_STATUS RegisterClient(uint32_t callback, uint32_t callback_arg,
@@ -40,50 +42,43 @@ class AudioSystem {
   void UnregisterClient(size_t index);
   void SubmitFrame(size_t index, uint32_t samples_ptr);
 
-  virtual X_STATUS CreateDriver(size_t index, HANDLE wait_handle,
+ protected:
+  explicit AudioSystem(cpu::Processor* processor);
+
+  virtual void Initialize();
+
+  void WorkerThreadMain();
+
+  virtual X_STATUS CreateDriver(size_t index,
+                                xe::threading::Semaphore* semaphore,
                                 AudioDriver** out_driver) = 0;
   virtual void DestroyDriver(AudioDriver* driver) = 0;
 
-  virtual uint64_t ReadRegister(uint64_t addr);
-  virtual void WriteRegister(uint64_t addr, uint64_t value);
+  // TODO(gibbed): respect XAUDIO2_MAX_QUEUED_BUFFERS somehow (ie min(64,
+  // XAUDIO2_MAX_QUEUED_BUFFERS))
+  static const size_t kMaximumQueuedFrames = 64;
 
- protected:
-  virtual void Initialize();
+  Memory* memory_ = nullptr;
+  cpu::Processor* processor_ = nullptr;
+  std::unique_ptr<XmaDecoder> xma_decoder_;
 
- private:
-  void ThreadStart();
+  std::atomic<bool> worker_running_ = {false};
+  kernel::object_ref<kernel::XHostThread> worker_thread_;
 
-  static uint64_t MMIOReadRegisterThunk(AudioSystem* as, uint64_t addr) {
-    return as->ReadRegister(addr);
-  }
-  static void MMIOWriteRegisterThunk(AudioSystem* as, uint64_t addr,
-                                     uint64_t value) {
-    as->WriteRegister(addr, value);
-  }
-
- protected:
-  AudioSystem(Emulator* emulator);
-
-  Emulator* emulator_;
-  Memory* memory_;
-  cpu::Processor* processor_;
-
-  std::thread thread_;
-  cpu::XenonThreadState* thread_state_;
-  uint32_t thread_block_;
-  std::atomic<bool> running_;
-
-  std::mutex lock_;
-
-  static const size_t maximum_client_count_ = 8;
-
+  xe::global_critical_region global_critical_region_;
+  static const size_t kMaximumClientCount = 8;
   struct {
     AudioDriver* driver;
     uint32_t callback;
     uint32_t callback_arg;
     uint32_t wrapped_callback_arg;
-  } clients_[maximum_client_count_];
-  HANDLE client_wait_handles_[maximum_client_count_];
+  } clients_[kMaximumClientCount];
+
+  std::unique_ptr<xe::threading::Semaphore>
+      client_semaphores_[kMaximumClientCount];
+  // Event is always there in case we have no clients.
+  std::unique_ptr<xe::threading::Event> shutdown_event_;
+  xe::threading::WaitHandle* wait_handles_[kMaximumClientCount + 1];
   std::queue<size_t> unused_clients_;
 };
 

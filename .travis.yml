@@ -1,23 +1,45 @@
-# Make Travis use docker (for faster builds, in theory)
-sudo: false
+# Make Travis use docker (for faster builds, in theory).
+# TODO(benvanik): re-enable when clang-3.8 is whitelisted.
+# https://github.com/travis-ci/apt-package-whitelist/issues/474
+#sudo: false
 
 language: cpp
 compiler:
   - clang
-  # - gcc don't really care
+  # - gcc
 
 os:
   - linux
-  - osx    # beta only
+  # - osx
 
-# Run setup to build ninja/gyp/etc and actually build xenia.
+sudo: false
+addons:
+  apt:
+    sources:
+      - ubuntu-toolchain-r-test
+      - llvm-toolchain-precise
+    packages:
+      - clang-3.8
+      - clang-format-3.8
+
+git:
+  # We handle submodules ourselves in xenia-build setup.
+  submodules: false
+
 before_script:
-  - travis_retry ./xenia-build.py setup
-  - ./xenia-build.py build --debug alloy-test
-  - ./xenia-build.py build --debug alloy-ppc-test
+  # Dump useful info.
+  - $CXX --version
+  # Prepare environment (pull dependencies, build tools).
+  - travis_retry ./xenia-build setup
 
-# Run test suite.
 script:
-  - ./build/xenia/Debug/alloy-test
-  - ./build/xenia/Debug/alloy-ppc-test --runtime_backend=ivm
-  - ./build/xenia/Debug/alloy-ppc-test --runtime_backend=x64
+  # Run linter.
+  - ./xenia-build lint --all
+  # Run style checker.
+  #- ./xenia-build style
+  # Build all of xenia.
+  #- ./xenia-build build --config=debug
+  # All tests (without haswell support).
+  #- ./xenia-build test --config=debug --no-build -- --enable_haswell_instructions=false
+  # All tests (with haswell support).
+  #- ./xenia-build test --config=debug --no-build -- --enable_haswell_instructions=true

@@ -10,9 +10,7 @@
 #ifndef XENIA_HID_NOP_NOP_INPUT_DRIVER_H_
 #define XENIA_HID_NOP_NOP_INPUT_DRIVER_H_
 
-#include <xenia/common.h>
-#include <xenia/hid/input_driver.h>
-#include <xenia/hid/nop/nop_hid-private.h>
+#include "xenia/hid/input_driver.h"
 
 namespace xe {
 namespace hid {
@@ -20,7 +18,7 @@ namespace nop {
 
 class NopInputDriver : public InputDriver {
  public:
-  NopInputDriver(InputSystem* input_system);
+  explicit NopInputDriver(xe::ui::Window* window);
   ~NopInputDriver() override;
 
   X_STATUS Setup() override;

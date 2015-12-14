@@ -10,22 +10,32 @@
 #ifndef XENIA_GPU_REGISTER_FILE_H_
 #define XENIA_GPU_REGISTER_FILE_H_
 
-#include <xenia/common.h>
+#include <cstdint>
+#include <cstdlib>
 
 namespace xe {
 namespace gpu {
 
 enum Register {
 #define XE_GPU_REGISTER(index, type, name) XE_GPU_REG_##name = index,
-#include <xenia/gpu/register_table.inc>
+#include "xenia/gpu/register_table.inc"
 #undef XE_GPU_REGISTER
+};
+
+struct RegisterInfo {
+  enum class Type {
+    kDword,
+    kFloat,
+  };
+  Type type;
+  const char* name;
 };
 
 class RegisterFile {
  public:
   RegisterFile();
 
-  const char* GetRegisterName(uint32_t index);
+  static const RegisterInfo* GetRegisterInfo(uint32_t index);
 
   static const size_t kRegisterCount = 0x5003;
   union RegisterValue {
@@ -34,6 +44,7 @@ class RegisterFile {
   };
   RegisterValue values[kRegisterCount];
 
+  RegisterValue& operator[](int reg) { return values[reg]; }
   RegisterValue& operator[](Register reg) { return values[reg]; }
 };
 

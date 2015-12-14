@@ -10,8 +10,11 @@
 #ifndef XENIA_GPU_TEXTURE_INFO_H_
 #define XENIA_GPU_TEXTURE_INFO_H_
 
-#include <xenia/gpu/ucode.h>
-#include <xenia/gpu/xenos.h>
+#include <cstring>
+#include <memory>
+
+#include "xenia/base/assert.h"
+#include "xenia/gpu/xenos.h"
 
 namespace xe {
 namespace gpu {
@@ -80,25 +83,91 @@ enum class TextureFormat : uint32_t {
   k_DXT5A = 59,
   k_CTX1 = 60,
   k_DXT3A_AS_1_1_1_1 = 61,
+  k_2_10_10_10_FLOAT = 62,
 
   kUnknown = 0xFFFFFFFFu,
 };
 
+inline TextureFormat ColorFormatToTextureFormat(ColorFormat color_format) {
+  return static_cast<TextureFormat>(color_format);
+}
+
+inline TextureFormat ColorRenderTargetToTextureFormat(
+    ColorRenderTargetFormat color_format) {
+  switch (color_format) {
+    case ColorRenderTargetFormat::k_8_8_8_8:
+      return TextureFormat::k_8_8_8_8;
+    case ColorRenderTargetFormat::k_8_8_8_8_GAMMA:
+      return TextureFormat::k_8_8_8_8;
+    case ColorRenderTargetFormat::k_2_10_10_10:
+      return TextureFormat::k_2_10_10_10;
+    case ColorRenderTargetFormat::k_2_10_10_10_FLOAT:
+      return TextureFormat::k_2_10_10_10_FLOAT;
+    case ColorRenderTargetFormat::k_16_16:
+      return TextureFormat::k_16_16;
+    case ColorRenderTargetFormat::k_16_16_16_16:
+      return TextureFormat::k_16_16_16_16;
+    case ColorRenderTargetFormat::k_16_16_FLOAT:
+      return TextureFormat::k_16_16_FLOAT;
+    case ColorRenderTargetFormat::k_16_16_16_16_FLOAT:
+      return TextureFormat::k_16_16_16_16_FLOAT;
+    case ColorRenderTargetFormat::k_2_10_10_10_unknown:
+      return TextureFormat::k_2_10_10_10;
+    case ColorRenderTargetFormat::k_2_10_10_10_FLOAT_unknown:
+      return TextureFormat::k_2_10_10_10_FLOAT;
+    case ColorRenderTargetFormat::k_32_FLOAT:
+      return TextureFormat::k_32_FLOAT;
+    case ColorRenderTargetFormat::k_32_32_FLOAT:
+      return TextureFormat::k_32_32_FLOAT;
+    default:
+      assert_unhandled_case(color_format);
+      return TextureFormat::kUnknown;
+  }
+}
+
+inline TextureFormat DepthRenderTargetToTextureFormat(
+    DepthRenderTargetFormat depth_format) {
+  switch (depth_format) {
+    case DepthRenderTargetFormat::kD24S8:
+      return TextureFormat::k_24_8;
+    case DepthRenderTargetFormat::kD24FS8:
+      return TextureFormat::k_24_8_FLOAT;
+    default:
+      assert_unhandled_case(depth_format);
+      return TextureFormat::kUnknown;
+  }
+}
+
+enum class FormatType {
+  kUncompressed,
+  kCompressed,
+};
+
+struct FormatInfo {
+  TextureFormat format;
+  FormatType type;
+  uint32_t block_width;
+  uint32_t block_height;
+  uint32_t bits_per_pixel;
+
+  static const FormatInfo* Get(uint32_t gpu_format);
+};
+
 struct TextureInfo {
   uint32_t guest_address;
-  uint32_t input_length;
-  uint32_t swizzle;
   Dimension dimension;
   uint32_t width;
   uint32_t height;
   uint32_t depth;
-  uint32_t block_size;
-  uint32_t texel_pitch;
-  xenos::Endian endianness;
+  const FormatInfo* format_info;
+  Endian endianness;
   bool is_tiled;
-  bool is_compressed;
+  uint32_t input_length;
+  uint32_t output_length;
 
-  TextureFormat format;
+  bool is_compressed() const {
+    return format_info->type == FormatType::kCompressed;
+  }
 
   union {
     struct {
@@ -111,20 +180,35 @@ struct TextureInfo {
       uint32_t block_height;
       uint32_t input_width;
       uint32_t input_height;
+      uint32_t input_pitch;
       uint32_t output_width;
       uint32_t output_height;
-      uint32_t logical_pitch;
-      uint32_t input_pitch;
+      uint32_t output_pitch;
     } size_2d;
     struct {
     } size_3d;
     struct {
+      uint32_t logical_width;
+      uint32_t logical_height;
+      uint32_t block_width;
+      uint32_t block_height;
+      uint32_t input_width;
+      uint32_t input_height;
+      uint32_t input_pitch;
+      uint32_t output_width;
+      uint32_t output_height;
+      uint32_t output_pitch;
+      uint32_t input_face_length;
+      uint32_t output_face_length;
     } size_cube;
   };
 
   static bool Prepare(const xenos::xe_gpu_texture_fetch_t& fetch,
                       TextureInfo* out_info);
 
+  static void GetPackedTileOffset(const TextureInfo& texture_info,
+                                  uint32_t* out_offset_x,
+                                  uint32_t* out_offset_y);
   static uint32_t TiledOffset2DOuter(uint32_t y, uint32_t width,
                                      uint32_t log_bpp);
   static uint32_t TiledOffset2DInner(uint32_t x, uint32_t y, uint32_t bpp,
@@ -138,6 +222,7 @@ struct TextureInfo {
  private:
   void CalculateTextureSizes1D(const xenos::xe_gpu_texture_fetch_t& fetch);
   void CalculateTextureSizes2D(const xenos::xe_gpu_texture_fetch_t& fetch);
+  void CalculateTextureSizesCube(const xenos::xe_gpu_texture_fetch_t& fetch);
 };
 
 }  // namespace gpu

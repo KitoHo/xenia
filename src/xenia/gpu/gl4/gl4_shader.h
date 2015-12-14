@@ -12,9 +12,8 @@
 
 #include <string>
 
-#include <xenia/common.h>
-#include <xenia/gpu/gl4/gl_context.h>
-#include <xenia/gpu/shader.h>
+#include "xenia/gpu/shader.h"
+#include "xenia/ui/gl/gl_context.h"
 
 namespace xe {
 namespace gpu {
@@ -29,13 +28,11 @@ class GL4Shader : public Shader {
   GLuint program() const { return program_; }
   GLuint vao() const { return vao_; }
 
-  bool PrepareVertexShader(const xenos::xe_gpu_program_cntl_t& program_cntl);
-  bool PreparePixelShader(const xenos::xe_gpu_program_cntl_t& program_cntl);
+  bool Prepare() override;
 
  protected:
-  std::string GetHeader();
   bool PrepareVertexArrayObject();
-  bool CompileProgram(std::string source);
+  bool CompileProgram();
 
   GLuint program_;
   GLuint vao_;
